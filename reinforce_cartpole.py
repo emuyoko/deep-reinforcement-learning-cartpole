@@ -66,7 +66,7 @@ class Policy(nn.Module):
 
     self.l1 = nn.Linear(self.in_size, 128)
     self.l2 = nn.Linear(128, self.out_size)
-    self.dropout = nn.Dropout(0.6)
+    self.dropout = Dropout(0.6)
     self.softmax = nn.Softmax(dim= 1)
 
   def forward(self, x):
