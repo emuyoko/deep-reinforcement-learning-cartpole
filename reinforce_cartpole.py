@@ -3,7 +3,7 @@ Jordan Lei, 2020. Some code is based on the following sources:
    https://medium.com/@ts1829/policy-gradient-reinforcement-learning-in-pytorch-df1383ea0baf
 '''
 
-import gym
+import gymnasium as gym
 import math
 import random
 import numpy as np
@@ -25,8 +25,9 @@ import torchvision.transforms as T
 from torch.utils.tensorboard import SummaryWriter
 from torch.autograd import Variable
 from torch.distributions import Categorical
-import ffmpeg
+# import ffmpeg
 import seaborn as sns
+from pprint import pp
 
 import argparse
 import os
@@ -50,7 +51,7 @@ args = parser.parse_args()
 # virtualdisplay.start()
 
 #setup environment
-env = gym.make('CartPole-v0').unwrapped
+env = gym.make('CartPole-v1', render_mode="rgb_array").unwrapped
 
 #set the cuda visible devices
 os.environ["CUDA_VISIBLE_DEVICES"]= "{}".format(args.device)
@@ -142,17 +143,16 @@ class Runner():
     running_reward = 10
     smoothed_reward = []
     for episode in range(episodes):
-      state = env.reset()
-      done = False
+      state, _info = env.reset()
       rewards = 0
 
       for time in range(500): 
         action = self.select_action(state)
-        state, reward, done, _ = env.step(action.data[0].item())
+        state, reward, done, truncated, _info = env.step(action.data[0].item())
         rewards+= reward
 
         self.net.reward_episode.append(reward)
-        if done: 
+        if done or truncated: 
           break
 
       
@@ -166,7 +166,7 @@ class Runner():
       self.writer.add_scalar("Reward", rewards, episode)
       self.writer.add_scalar("Mean Reward", np.mean(smoothed_reward), episode)
       
-      self.plots["Loss"].append(loss)
+      self.plots["Loss"].append(loss.item() if isinstance(loss, torch.Tensor) else loss)
       self.plots["Reward"].append(rewards)
       self.plots["Mean Reward"].append(np.mean(smoothed_reward))
 
@@ -180,16 +180,16 @@ class Runner():
     fig = plt.figure() 
     ims = []
     rewards = 0
-    state = env.reset()
+    state, _info = env.reset()
     for time in range(500):
       action = self.select_action(state) 
-      state, reward, done, _ = env.step(action.data[0].item())
+      state, reward, done, truncated, _info = env.step(action.data[0].item())
       rewards += reward
 
-      if done:
+      if done or truncated:
         break
     
-      im = plt.imshow(env.render(mode='rgb_array'), animated=True)
+      im = plt.imshow(env.render(), animated=True)
       plt.axis('off')
       plt.title("Policy Gradient Agent")
       ims.append([im])
@@ -199,7 +199,9 @@ class Runner():
     print("\tSaving Animation ...")
     ani = animation.ArtistAnimation(fig, ims, interval=20, blit=True,
                                     repeat_delay=1000)
+    plt.rcParams['animation.ffmpeg_path'] = 'ffmpeg'
     ani.save('%s-movie.avi'%self.logs, dpi = 300)
+    # ani.save('%s-movie.png'%self.logs, dpi = 300)
     # animation.save('animation.gif', writer='PillowWriter', fps=2)
 
   def plot(self):

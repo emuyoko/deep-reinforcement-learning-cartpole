@@ -3,7 +3,7 @@ Jordan Lei, 2020. Some code is based on the following sources:
    https://towardsdatascience.com/understanding-actor-critic-methods-931b97b6df3f
 '''
 
-import gym
+import gymnasium as gym
 import math
 import random
 import numpy as np
@@ -23,10 +23,11 @@ import torchvision.transforms as T
 from torch.utils.tensorboard import SummaryWriter
 from torch.autograd import Variable
 from torch.distributions import Categorical
-import ffmpeg
+# import ffmpeg
+import seaborn as sns
+from pprint import pp
 
 import argparse
-import seaborn as sns
 import os
 
 parser = argparse.ArgumentParser()
@@ -44,7 +45,7 @@ parser.add_argument('--gamma', type=float, default=0.99) #discount factor
 args = parser.parse_args()
 
 #setup environment
-env = gym.make('CartPole-v0').unwrapped
+env = gym.make('CartPole-v1', render_mode="rgb_array").unwrapped
 
 #set the cuda visible devices
 os.environ["CUDA_VISIBLE_DEVICES"]= "{}".format(args.device)
@@ -179,10 +180,9 @@ class Runner():
     smoothed_reward = []
     
     for episode in range(episodes): 
+      state, _info = env.reset()
       rewards = 0
-      state = env.reset()
       self.entropy = 0
-      done = False
 
       for step in range(500): 
         self.estimate_value(state)
@@ -193,12 +193,12 @@ class Runner():
         e = -np.sum(np.mean(policy) * np.log(policy))
         self.entropy += e
 
-        state, reward, done, _ = env.step(action.data[0].item())
+        state, reward, done, truncated, _info = env.step(action.data[0].item())
         rewards+= reward
 
         self.actor.reward_episode.append(reward)
 
-        if done:
+        if done or truncated:
           break
       
       smoothed_reward.append(rewards)
@@ -212,8 +212,8 @@ class Runner():
       self.writer.add_scalar("Reward", rewards, episode)
       self.writer.add_scalar("Mean Reward", np.mean(smoothed_reward), episode)
 
-      self.plots["Critic Loss"].append(c_loss * 100)
-      self.plots["Actor Loss"].append(a_loss)
+      self.plots["Critic Loss"].append(c_loss.item() if isinstance(c_loss, torch.Tensor) else c_loss)
+      self.plots["Actor Loss"].append(a_loss.item() if isinstance(a_loss, torch.Tensor) else a_loss)
       self.plots["Reward"].append(rewards)
       self.plots["Mean Reward"].append(np.mean(smoothed_reward))
 
@@ -227,16 +227,16 @@ class Runner():
     fig = plt.figure() 
     ims = []
     rewards = 0
-    state = env.reset()
+    state, _info = env.reset()
     for time in range(500):
       action = self.select_action(state) 
-      state, reward, done, _ = env.step(action.data[0].item())
+      state, reward, done, truncated, _info = env.step(action.data[0].item())
       rewards += reward
 
-      if done:
+      if done or truncated:
         break
     
-      im = plt.imshow(env.render(mode='rgb_array'), animated=True)
+      im = plt.imshow(env.render(), animated=True)
       plt.axis('off')
       plt.title("Actor Critic Agent")
       ims.append([im])
@@ -246,8 +246,10 @@ class Runner():
     print("\tSaving Animation ...")
     ani = animation.ArtistAnimation(fig, ims, interval=20, blit=True,
                                     repeat_delay=1000)
+    plt.rcParams['animation.ffmpeg_path'] = 'ffmpeg'
     ani.save('%s-movie.avi'%self.logs, dpi = 300)
-    
+    # ani.save('%s-movie.png'%self.logs, dpi = 300)
+
   def save(self): 
     ac = ActorCritic(self.actor, self.critic)
     torch.save(ac.state_dict(),'%s/model.pt'%self.logs)
