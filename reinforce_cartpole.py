@@ -40,7 +40,7 @@ parser.add_argument('--save', type=bool, default = False) #if saving an existing
 parser.add_argument('--plot', type=bool, default = True) #if plotting an existing model
 parser.add_argument('--model', type=str, default='reinforce_cartpole/model.pt') #model - currently supports resnet and alexnet, with more to come
 parser.add_argument('--runtype', type=str, default='train_run',
-                        choices=('train', 'run', 'train_run')) #runtype: train only or train and validate
+                        choices=('train', 'run', 'train_run', 'onnx')) #runtype: train only or train and validate
 parser.add_argument('--lr', type=float, default=0.01)  #learning rate
 parser.add_argument('--episodes', type=int, default=500) #number of episodes    
 parser.add_argument('--gamma', type=float, default=0.99) #discount factor                                  
@@ -69,25 +69,29 @@ class Policy(nn.Module):
     self.dropout = nn.Dropout(0.6)
     self.softmax = nn.Softmax(dim= 1)
 
-    self.policy_history = Variable(torch.Tensor()).to(device)
-    self.reward_episode = []
-
-    self.reward_history = []
-    self.loss_history = []
-
   def forward(self, x):
     # convert state to tensor
 
-    x = Variable(torch.from_numpy(x).float().unsqueeze(0)).to(device) 
+    x = Variable(x.unsqueeze(0)).to(device) 
     x = self.l1(x)
     x = F.relu(self.dropout(x))
     x = self.l2(x)
     #softmax outputs a probability distribution over action space
     return self.softmax(x)
 
+# The history data of Policy due to apply ONNX exporter.
+class PolicyHistory:
+  def __init__(self):
+    self.policy_history = Variable(torch.Tensor()).to(device)
+    self.reward_episode = []
+    self.reward_history = []
+    self.loss_history = []
+
+
 class Runner():
   def __init__(self, net, optimizer, gamma = 0.99, logs = "reinforce_cartpole"):
     self.net = net
+    self.net_history = PolicyHistory()
     self.optimizer = optimizer
     self.gamma = gamma
     self.writer = SummaryWriter(logs)
@@ -97,15 +101,15 @@ class Runner():
 
   def select_action(self, state):
     #convert state to tensor
-    probs = self.net(state)
+    probs = self.net(torch.from_numpy(state).float())
     c = Categorical(probs)
     action = c.sample()
 
     #place log probabilities into the policy history log\pi(a | s)
-    if self.net.policy_history.dim()!= 0: 
-      self.net.policy_history = torch.cat([self.net.policy_history, c.log_prob(action)])
+    if self.net_history.policy_history.dim()!= 0: 
+      self.net_history.policy_history = torch.cat([self.net_history.policy_history, c.log_prob(action)])
     else: 
-      self.net.policy_history = (c.log_prob(action))
+      self.net_history.policy_history = (c.log_prob(action))
     
     return action
   
@@ -114,7 +118,7 @@ class Runner():
     rewards = []
 
     #discount using gamma
-    for r in self.net.reward_episode[::-1]: 
+    for r in self.net_history.reward_episode[::-1]: 
       R = r + self.gamma * R
       rewards.insert(0, R)
     
@@ -124,17 +128,17 @@ class Runner():
     rewards = (rewards - rewards.mean()) / (rewards.std() + np.finfo(np.float32).eps)
 
     #loss = - sum_t log(\pi(a|s)) * v_t
-    loss = torch.sum(torch.mul(self.net.policy_history, Variable(rewards).to(device)).mul(-1), -1)
+    loss = torch.sum(torch.mul(self.net_history.policy_history, Variable(rewards).to(device)).mul(-1), -1)
     self.optimizer.zero_grad()
     loss.backward()
     self.optimizer.step()
 
     #update reward history and loss histories
-    self.net.loss_history.append(loss.item())
-    self.net.reward_history.append(np.sum(self.net.reward_episode))
+    self.net_history.loss_history.append(loss.item())
+    self.net_history.reward_history.append(np.sum(self.net_history.reward_episode))
     #flush policy history
-    self.net.policy_history = Variable(torch.Tensor()).to(device)
-    self.net.reward_episode = []
+    self.net_history.policy_history = Variable(torch.Tensor()).to(device)
+    self.net_history.reward_episode = []
 
     return loss
 
@@ -151,7 +155,7 @@ class Runner():
         state, reward, done, truncated, _info = env.step(action.data[0].item())
         rewards+= reward
 
-        self.net.reward_episode.append(reward)
+        self.net_history.reward_episode.append(reward)
         if done or truncated: 
           break
 
@@ -236,6 +240,11 @@ class Runner():
   def save(self): 
     torch.save(self.net.state_dict(),'%s/model.pt'%self.logs)
 
+  def convert_to_onnx(self):
+    state = torch.rand(1, 4)
+    torch.onnx.export(self.net, args=(state,), f='%s/model.onnx'%self.logs, dynamo=True)
+
+
 def main(): 
     device_name = "cuda: %s"%(args.device) if torch.cuda.is_available() else "cpu"
     print("[Device]\tDevice selected: ", device_name)
@@ -243,7 +252,7 @@ def main():
     policy = Policy(env.observation_space.shape[0], env.action_space.n).to(device)
     
     #if we're loading a model
-    if args.load: 
+    if args.load:
         policy.load_state_dict(torch.load(args.model))
 
     optimizer = optim.Adam(policy.parameters(), lr = args.lr)
@@ -265,7 +274,10 @@ def main():
     if "run" in args.runtype:
         print("[Run]\tRunning Simulation ...")
         runner.run()
-    
+
+    if "onnx" in args.runtype:
+        print("[Onnx]\tConverting to ONNX model ...")
+        runner.convert_to_onnx()
 
     print("[End]\tDone. Congratulations!")
 
