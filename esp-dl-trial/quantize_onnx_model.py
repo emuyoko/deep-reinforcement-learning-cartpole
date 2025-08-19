@@ -10,8 +10,8 @@ def collate_fn(batch):
 
 if __name__ == "__main__":
 
-    ONNX_MODEL_PATH = "models/reinforce_cartpole/model.onnx"
-    ESPDL_MODEL_PATH = "models/reinforce_cartpole/model.espdl"
+    ONNX_MODEL_PATH = "models/a2c_cartpole/actor.onnx"
+    ESPDL_MODEL_PATH = "models/a2c_cartpole/actor.espdl"
     INPUT_SHAPE = [1, 4]
     TARGET = "esp32s3"
     NUM_OF_BITS = 8

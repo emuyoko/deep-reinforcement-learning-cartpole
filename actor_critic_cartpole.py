@@ -21,8 +21,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
 from torch.utils.tensorboard import SummaryWriter
-from torch.autograd import Variable
 from torch.distributions import Categorical
+from torchsummary import summary
 # import ffmpeg
 import seaborn as sns
 from pprint import pp
@@ -37,8 +37,8 @@ parser.add_argument('--load', type=bool, default = False) #if loading an existin
 parser.add_argument('--save', type=bool, default = False) #if saving an existing model
 parser.add_argument('--plot', type=bool, default = True) #if plotting an existing model
 parser.add_argument('--model', type=str, default='reinforce_cartpole/model.pt') #model - currently supports resnet and alexnet, with more to come
-parser.add_argument('--runtype', type=str, default='train_run',
-                        choices=('train', 'run', 'train_run')) #runtype: train only or train and validate
+parser.add_argument('--runtype', type=str, default='train_run_onnx',
+                        choices=('train', 'run', 'onnx', 'train_run_onnx')) #runtype: train only or train and validate
 parser.add_argument('--lr', type=float, default=0.01)  #learning rate
 parser.add_argument('--episodes', type=int, default=500) #number of episodes    
 parser.add_argument('--gamma', type=float, default=0.99) #discount factor                                  
@@ -53,43 +53,49 @@ device =  torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 #actor network
 class Actor(nn.Module): 
-  def __init__(self, in_size, out_size): 
+  def __init__(self, in_size, out_size):
     super(Actor, self).__init__()
     self.linear1 = nn.Linear(in_size, 128)
     self.linear2 = nn.Linear(128, out_size)
     self.dropout = nn.Dropout(0.7)
     self.softmax = nn.Softmax(dim= 1)
+  
+  def forward(self, x):
+    x = x.unsqueeze(0)
+    x = self.linear1(x)
+    x = F.relu(x)
+    x = self.dropout(x)
+    x = self.linear2(x)
+    x = self.softmax(x)
+    return x
 
-    self.policy_history = Variable(torch.Tensor()).to(device)
+# The history data of Actor due to apply ONNX exporter.
+class ActorHistory:
+  def __init__(self):
+    self.policy_history = torch.Tensor()
     self.reward_episode = []
-
     self.reward_history = []
     self.loss_history = []
-  
-  def forward(self, x): 
-    #convert numpy state to tensor
-    x = Variable(torch.from_numpy(x).float().unsqueeze(0)).to(device)
-    x = F.relu(self.linear1(x))
-    x = self.dropout(x)
-    x = self.softmax(self.linear2(x))
-    return x
 
 #critic network
 class Critic(nn.Module): 
   def __init__(self, in_size): 
     super(Critic, self).__init__()
-    self.linear1 = nn.Linear(in_size, 128)
+    self.in_size = in_size  # ONNX exporter requires it.
+    self.linear1 = nn.Linear(self.in_size, 128)
     self.linear2 = nn.Linear(128, 1)
-    self.dropout = nn.Dropout(0.7)
-
-    self.value_episode = []
-    self.value_history = Variable(torch.Tensor()).to(device)
     
   def forward(self, x): 
-    x = Variable(torch.from_numpy(x).float().unsqueeze(0)).to(device)
+    x = x.unsqueeze(0)
     x = F.relu(self.linear1(x))
     x = self.linear2(x)
     return x 
+
+# The history data of Critic due to apply ONNX exporter.
+class CriticHistory:
+  def __init__(self):
+    self.value_episode = []
+    self.value_history = torch.Tensor()
 
 #combined module (mostly for loading / storing)
 class ActorCritic(nn.Module): 
@@ -108,6 +114,8 @@ class Runner():
   def __init__(self, actor, critic, a_optimizer, c_optimizer, gamma=0.99, logs = "a2c_cartpole"):
     self.actor = actor
     self.critic = critic
+    self.actor_history = ActorHistory()
+    self.critic_history = CriticHistory()
     self.a_opt = a_optimizer
     self.c_opt = c_optimizer
     self.gamma = gamma
@@ -122,24 +130,24 @@ class Runner():
 
   def select_action(self, state):
     #convert state to tensor
-    probs = self.actor(state)
+    probs = self.actor(torch.from_numpy(state).float())
     c = Categorical(probs)
     action = c.sample()
 
     #place log probabilities into the policy history log\pi(a | s)
-    if self.actor.policy_history.dim()!= 0: 
-      self.actor.policy_history = torch.cat([self.actor.policy_history, c.log_prob(action)])
+    if self.actor_history.policy_history.dim()!= 0: 
+      self.actor_history.policy_history = torch.cat([self.actor_history.policy_history, c.log_prob(action)])
     else: 
-      self.actor.policy_history = (c.log_prob(action))
+      self.actor_history.policy_history = (c.log_prob(action))
     
     return action
   
   def estimate_value(self, state): 
-    pred = self.critic(state).squeeze(0)
-    if self.critic.value_history.dim()!= 0: 
-      self.critic.value_history = torch.cat([self.critic.value_history, pred])
+    pred = self.critic(torch.from_numpy(state).float()).squeeze(0)
+    if self.critic_history.value_history.dim()!= 0: 
+      self.critic_history.value_history = torch.cat([self.critic_history.value_history, pred])
     else: 
-      self.critic.policy_history = (pred)
+      self.critic_history.policy_history = (pred)
 
   
   def update_a2c(self):
@@ -147,13 +155,13 @@ class Runner():
     q_vals = []
 
     #"unroll" the rewards, apply gamma
-    for r in self.actor.reward_episode[::-1]: 
+    for r in self.actor_history.reward_episode[::-1]: 
       R = r + self.gamma * R
       q_vals.insert(0, R)
     
     q_vals = torch.FloatTensor(q_vals).to(device)
-    values = self.critic.value_history
-    log_probs = self.actor.policy_history
+    values = self.critic_history.value_history
+    log_probs = self.actor_history.policy_history
     
     # print(values)
     # print(log_probs)
@@ -169,9 +177,9 @@ class Runner():
     actor_loss.backward()
     self.a_opt.step()
 
-    self.actor.reward_episode = []
-    self.actor.policy_history = Variable(torch.Tensor()).to(device)
-    self.critic.value_history = Variable(torch.Tensor()).to(device)
+    self.actor_history.reward_episode = []
+    self.actor_history.policy_history = torch.Tensor()
+    self.critic_history.value_history = torch.Tensor()
     
   
     return actor_loss, critic_loss
@@ -187,7 +195,7 @@ class Runner():
       for step in range(500): 
         self.estimate_value(state)
         
-        policy = self.actor(state).cpu().detach().numpy()
+        policy = self.actor(torch.from_numpy(state).float()).cpu().detach().numpy()
         action = self.select_action(state)
 
         e = -np.sum(np.mean(policy) * np.log(policy))
@@ -196,7 +204,7 @@ class Runner():
         state, reward, done, truncated, _info = env.step(action.data[0].item())
         rewards+= reward
 
-        self.actor.reward_episode.append(reward)
+        self.actor_history.reward_episode.append(reward)
 
         if done or truncated:
           break
@@ -254,6 +262,14 @@ class Runner():
     ac = ActorCritic(self.actor, self.critic)
     torch.save(ac.state_dict(),'%s/model.pt'%self.logs)
 
+  def convert_to_onnx(self):
+    summary(self.actor, (1, 4))
+    state = torch.rand(1, 4)
+    torch.onnx.export(self.actor, args=(state,), f='%s/actor.onnx'%self.logs, dynamo=True) # , report=True, verbose=True)
+    # torch.onnx.export(self.critic, args=(state,), f='%s/model.onnx'%self.logs, dynamo=True)
+    # ac = ActorCritic(self.actor, self.critic)
+    # torch.onnx.export(ac, args=(state,), f='%s/model.onnx'%self.logs, dynamo=True)
+
   def plot(self):
     sns.set()
     sns.set_context("poster")
@@ -310,7 +326,10 @@ def main():
     if "run" in args.runtype:
         print("[Run]\tRunning Simulation ...")
         runner.run()
-    
+
+    if "onnx" in args.runtype:
+        print("[Onnx]\tConverting to ONNX model ...")
+        runner.convert_to_onnx()
 
     print("[End]\tDone. Congratulations!")
 

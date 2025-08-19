@@ -39,8 +39,8 @@ parser.add_argument('--load', type=bool, default = False) #if loading an existin
 parser.add_argument('--save', type=bool, default = False) #if saving an existing model
 parser.add_argument('--plot', type=bool, default = True) #if plotting an existing model
 parser.add_argument('--model', type=str, default='reinforce_cartpole/model.pt') #model - currently supports resnet and alexnet, with more to come
-parser.add_argument('--runtype', type=str, default='train_run',
-                        choices=('train', 'run', 'train_run', 'onnx')) #runtype: train only or train and validate
+parser.add_argument('--runtype', type=str, default='train_run_onnx',
+                        choices=('train', 'run', 'onnx', 'train_run_onnx')) #runtype: train only or train and validate
 parser.add_argument('--lr', type=float, default=0.01)  #learning rate
 parser.add_argument('--episodes', type=int, default=500) #number of episodes    
 parser.add_argument('--gamma', type=float, default=0.99) #discount factor                                  
