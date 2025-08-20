@@ -23,7 +23,6 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
 from torch.utils.tensorboard import SummaryWriter
-from torch.autograd import Variable
 from torch.distributions import Categorical
 # import ffmpeg
 import seaborn as sns
@@ -39,8 +38,8 @@ parser.add_argument('--load', type=bool, default = False) #if loading an existin
 parser.add_argument('--save', type=bool, default = False) #if saving an existing model
 parser.add_argument('--plot', type=bool, default = True) #if plotting an existing model
 parser.add_argument('--model', type=str, default='reinforce_cartpole/model.pt') #model - currently supports resnet and alexnet, with more to come
-parser.add_argument('--runtype', type=str, default='train_run',
-                        choices=('train', 'run', 'train_run')) #runtype: train only or train and validate
+parser.add_argument('--runtype', type=str, default='train_run_onnx',
+                        choices=('train', 'run', 'onnx', 'train_run_onnx')) #runtype: train only or train and validate
 parser.add_argument('--lr', type=float, default=0.001)  #learning rate
 parser.add_argument('--episodes', type=int, default=500) #number of episodes    
 parser.add_argument('--gamma', type=float, default=0.99) #discount factor                                  
@@ -91,7 +90,6 @@ class DQN(nn.Module):
     self.dropout = nn.Dropout(0.7)
   
   def forward(self, x): 
-    # x = Variable(torch.from_numpy(x).float().unsqueeze(0)).to(device) 
     x = F.relu(self.layer1(x))
     x = self.dropout(F.relu(self.layer2(x)))
     x = F.relu(self.layer3(x)) 
@@ -184,7 +182,7 @@ class Runner():
       rewards = 0
 
       state, _info = env.reset()
-      state = Variable(torch.from_numpy(state).float().unsqueeze(0)).to(device)
+      state = torch.from_numpy(state).float().unsqueeze(0).to(device)
 
       for i in range(500): 
         action = self.select_action(state)
@@ -235,7 +233,7 @@ class Runner():
     ims = []
     rewards = 0
     state, _info = env.reset()
-    state = Variable(torch.from_numpy(state).float().unsqueeze(0)).to(device)
+    state = torch.from_numpy(state).float().unsqueeze(0).to(device)
 
     for time in range(500):
       action = self.select_action(state) 
@@ -292,6 +290,10 @@ class Runner():
   def save(self): 
     torch.save(self.learner.state_dict(),'%s/model.pt'%self.logs)
 
+  def convert_to_onnx(self):
+    state = torch.rand(1, 4)
+    torch.onnx.export(self.learner, args=(state,), f='%s/model.onnx'%self.logs, dynamo=True) # , report=True, verbose=True)
+
 def main(): 
     device_name = "cuda: %s"%(args.device) if torch.cuda.is_available() else "cpu"
     print("[Device]\tDevice selected: ", device_name)
@@ -321,7 +323,10 @@ def main():
     if "run" in args.runtype:
         print("[Run]\tRunning Simulation ...")
         runner.run()
-    
+
+    if "onnx" in args.runtype:
+        print("[Onnx]\tConverting to ONNX model ...")
+        runner.convert_to_onnx()
 
     print("[End]\tDone. Congratulations!")
 
